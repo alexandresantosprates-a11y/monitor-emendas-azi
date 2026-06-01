@@ -301,11 +301,21 @@ def sair():
 
 
 # ---------------------------------------------------------------------------
-# Startup — inicia coleta em background imediatamente
+# Startup
 # ---------------------------------------------------------------------------
 
-db.inicializar()
-_iniciar_coleta()
+try:
+    db.inicializar()
+except Exception as e:
+    logger.error("Erro ao inicializar banco: %s", e)
+
+
+@app.before_request
+def inicializar_dados():
+    """Inicia coleta na primeira requisição, não no import."""
+    if not _status["pronto"] and not _status["carregando"] and not _status["erro"]:
+        _iniciar_coleta()
+
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
