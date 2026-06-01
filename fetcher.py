@@ -97,15 +97,15 @@ def _row_to_dict(header: List[str], row: List[str]) -> Dict:
     return {header[i]: row[i] if i < len(row) else "" for i in range(len(header))}
 
 
-def carregar_csv_detalhado() -> Tuple[List[Dict], List[Dict]]:
+def carregar_csv_detalhado() -> Tuple[List[Dict], List[Dict], List[Dict]]:
     """
-    Retorna (emendas_azi, convenios_azi) com todos os dados do CSV.
+    Retorna (emendas_azi, convenios_azi, favorecidos_azi) com todos os dados do CSV.
     Filtra automaticamente pelo código do autor Paulo Azi (3738).
     """
     z = _baixar_zip()
     if not z:
         logger.error("Não foi possível baixar o ZIP de dados abertos.")
-        return [], []
+        return [], [], []
 
     # CSV principal: emendas por linha de execução (município + ação)
     raw_principal = z.read("EmendasParlamentares.csv").decode("latin-1")
@@ -116,16 +116,26 @@ def carregar_csv_detalhado() -> Tuple[List[Dict], List[Dict]]:
         if d.get("Código do Autor da Emenda", "").strip() == CODIGO_AUTOR_AZI:
             emendas.append(d)
 
+    codigos_azi = {e["Código da Emenda"] for e in emendas}
+
     # CSV de convênios: objeto exato + convenente + município
     raw_conv = z.read("EmendasParlamentares_Convenios.csv").decode("latin-1")
     header_c, rows_c = _parse_csv(raw_conv)
-    codigos_azi = {e["Código da Emenda"] for e in emendas}
     convenios = []
     for row in rows_c:
         d = _row_to_dict(header_c, row)
         if d.get("Código da Emenda", "") in codigos_azi:
             convenios.append(d)
 
-    logger.info("CSV carregado: %d emendas, %d convênios de Paulo Azi",
-                len(emendas), len(convenios))
-    return emendas, convenios
+    # CSV por favorecido: pagamentos reais por entidade/município
+    raw_fav = z.read("EmendasParlamentares_PorFavorecido.csv").decode("latin-1")
+    header_f, rows_f = _parse_csv(raw_fav)
+    favorecidos = []
+    for row in rows_f:
+        d = _row_to_dict(header_f, row)
+        if d.get("Código do Autor da Emenda", "").strip() == CODIGO_AUTOR_AZI:
+            favorecidos.append(d)
+
+    logger.info("CSV carregado: %d emendas, %d convênios, %d favorecidos de Paulo Azi",
+                len(emendas), len(convenios), len(favorecidos))
+    return emendas, convenios, favorecidos

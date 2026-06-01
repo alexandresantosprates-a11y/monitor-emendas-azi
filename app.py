@@ -52,9 +52,10 @@ def _coletar_em_background():
         import processor
         import emailer
         logger.info("Iniciando coleta em background...")
-        emendas_csv, convenios_csv = fetcher.carregar_csv_detalhado()
+        emendas_csv, convenios_csv, favorecidos_csv = fetcher.carregar_csv_detalhado()
         processor.processar_emendas_csv(emendas_csv)
         processor.processar_convenios_csv(convenios_csv)
+        processor.processar_favorecidos_csv(favorecidos_csv)
         db.registrar_coleta("web_app", len(emendas_csv), "OK")
         _status["pronto"] = True
         _status["ultima"] = datetime.now().strftime("%d/%m/%Y às %H:%M")

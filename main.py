@@ -37,14 +37,16 @@ def coletar_completo():
     """Coleta completa: CSV dados abertos (município + objeto) + API (valores atuais)."""
     logger.info("=== COLETA COMPLETA ===")
 
-    # 1. CSV dados abertos — município, objeto, ação
+    # 1. CSV dados abertos — município, objeto, ação, favorecidos
     logger.info("Baixando CSV dados abertos (todos os anos)...")
-    emendas_csv, convenios_csv = fetcher.carregar_csv_detalhado()
+    emendas_csv, convenios_csv, favorecidos_csv = fetcher.carregar_csv_detalhado()
     ok_e = processor.processar_emendas_csv(emendas_csv)
     ok_c = processor.processar_convenios_csv(convenios_csv)
+    ok_f = processor.processar_favorecidos_csv(favorecidos_csv)
     db.registrar_coleta("csv_emendas", ok_e, "OK")
     db.registrar_coleta("csv_convenios", ok_c, "OK")
-    logger.info("CSV: %d emendas, %d convênios salvos", ok_e, ok_c)
+    db.registrar_coleta("csv_favorecidos", ok_f, "OK")
+    logger.info("CSV: %d emendas, %d convênios, %d favorecidos salvos", ok_e, ok_c, ok_f)
 
     # 2. API — atualizar valores financeiros recentes (últimos 3 anos)
     logger.info("Atualizando valores via API...")
@@ -117,9 +119,9 @@ def imprimir_resumo():
         pct = (r["pago"] / r["empenhado"] * 100) if r["empenhado"] else 0
         print(f"    {r['categoria']:25s} {r['emendas']:2d} emendas  "
               f"R${r['empenhado']:>15,.2f}  pago {pct:.0f}%")
-    print("\n  Top 10 municípios:")
+    print("\n  Top 10 municípios (por valor recebido):")
     for r in resumo["top_municipios"][:10]:
-        print(f"    {r['municipio']}/{r['uf']:2s}  R${r['empenhado']:>15,.2f}")
+        print(f"    {r['municipio']}/{r.get('uf','BA'):2s}  R${r.get('recebido', r.get('empenhado',0)):>15,.2f}")
     print("\n  Convênios com objeto detalhado:", len(resumo["convenios"]))
     print("=" * 65 + "\n")
 

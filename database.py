@@ -15,7 +15,6 @@ def inicializar():
     conn = get_connection()
     c = conn.cursor()
 
-    # Emendas detalhadas (uma linha por emenda + município + ação)
     c.execute("""
         CREATE TABLE IF NOT EXISTS emendas (
             id TEXT PRIMARY KEY,
@@ -46,7 +45,6 @@ def inicializar():
         )
     """)
 
-    # Convênios com objeto exato e município
     c.execute("""
         CREATE TABLE IF NOT EXISTS convenios (
             id TEXT PRIMARY KEY,
@@ -68,7 +66,25 @@ def inicializar():
         )
     """)
 
-    # Alertas de mudanças detectadas
+    # Pagamentos efetivos por entidade/município (EmendasParlamentares_PorFavorecido.csv)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS favorecidos (
+            id TEXT PRIMARY KEY,
+            codigo_emenda TEXT,
+            numero_emenda TEXT,
+            tipo_emenda TEXT,
+            ano_mes TEXT,
+            ano INTEGER,
+            cnpj_favorecido TEXT,
+            favorecido TEXT,
+            natureza_juridica TEXT,
+            tipo_favorecido TEXT,
+            uf TEXT,
+            municipio TEXT,
+            valor_recebido REAL DEFAULT 0
+        )
+    """)
+
     c.execute("""
         CREATE TABLE IF NOT EXISTS alertas (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -81,7 +97,6 @@ def inicializar():
         )
     """)
 
-    # Registro de coletas
     c.execute("""
         CREATE TABLE IF NOT EXISTS coletas (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -168,6 +183,21 @@ def upsert_convenio(d: dict):
     conn.close()
 
 
+def upsert_favorecido(d: dict):
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO favorecidos (id, codigo_emenda, numero_emenda, tipo_emenda, ano_mes, ano,
+            cnpj_favorecido, favorecido, natureza_juridica, tipo_favorecido, uf, municipio, valor_recebido)
+        VALUES (:id,:codigo_emenda,:numero_emenda,:tipo_emenda,:ano_mes,:ano,
+            :cnpj_favorecido,:favorecido,:natureza_juridica,:tipo_favorecido,:uf,:municipio,:valor_recebido)
+        ON CONFLICT(id) DO UPDATE SET
+            valor_recebido=excluded.valor_recebido
+    """, d)
+    conn.commit()
+    conn.close()
+
+
 def registrar_coleta(fonte: str, total: int, status: str, erro: str = None):
     conn = get_connection()
     c = conn.cursor()
@@ -201,7 +231,7 @@ def resumo_completo() -> dict:
     conn = get_connection()
     c = conn.cursor()
 
-    # Totais gerais
+    # Totais gerais — usa favorecidos para valor efetivamente entregue
     c.execute("""
         SELECT COUNT(DISTINCT codigo) as total_emendas,
                SUM(valor_empenhado) as total_empenhado,
@@ -211,6 +241,28 @@ def resumo_completo() -> dict:
         FROM emendas
     """)
     totais = dict(c.fetchone())
+
+    # Total recebido somente por municípios da Bahia (exclui intermediários financeiros em Brasília)
+    c.execute("""
+        SELECT COALESCE(SUM(valor_recebido),0) as total_recebido
+        FROM favorecidos
+        WHERE uf = 'BA' OR (uf = '' AND municipio != 'Brasília')
+    """)
+    totais["total_recebido"] = (c.fetchone()["total_recebido"] or 0)
+
+    # Total das Transferências Especiais (PIX) — passam por Banco do Brasil em Brasília
+    c.execute("""
+        SELECT COALESCE(SUM(valor_recebido),0) as pix
+        FROM favorecidos WHERE municipio = 'Brasília'
+    """)
+    totais["total_pix"] = (c.fetchone()["pix"] or 0)
+
+    c.execute("""
+        SELECT COUNT(DISTINCT municipio) as total_municipios
+        FROM favorecidos
+        WHERE municipio != '' AND municipio != 'Brasília' AND uf = 'BA'
+    """)
+    totais["total_municipios"] = (c.fetchone()["total_municipios"] or 0)
 
     # Por categoria/área
     c.execute("""
@@ -231,27 +283,43 @@ def resumo_completo() -> dict:
     """)
     por_status = [dict(r) for r in c.fetchall()]
 
-    # Por ano
+    # Por ano — com valor recebido pelos favorecidos (mais preciso que "pago")
     c.execute("""
         SELECT ano,
                COUNT(DISTINCT codigo) as emendas,
                SUM(valor_empenhado) as empenhado,
                SUM(valor_liquidado) as liquidado,
-               SUM(valor_pago) as pago
+               SUM(valor_pago) as pago,
+               SUM(valor_restos_inscritos) as restos_inscritos
         FROM emendas GROUP BY ano ORDER BY ano DESC
     """)
-    por_ano = [dict(r) for r in c.fetchall()]
+    por_ano_base = {r["ano"]: dict(r) for r in c.fetchall()}
 
-    # Top municípios beneficiados (via tabela emendas com município específico)
+    # Valor recebido pelos favorecidos POR ANO DA EMENDA (não ano do pagamento)
+    c.execute("""
+        SELECT e.ano, COALESCE(SUM(f.valor_recebido),0) as recebido
+        FROM favorecidos f
+        JOIN emendas e ON e.codigo = f.codigo_emenda
+        GROUP BY e.ano
+    """)
+    recebido_por_ano = {r["ano"]: r["recebido"] for r in c.fetchall()}
+
+    por_ano = []
+    for ano, dados in sorted(por_ano_base.items(), key=lambda x: -x[0]):
+        dados["recebido"] = recebido_por_ano.get(ano, 0)
+        por_ano.append(dados)
+
+    # Top municípios por valor recebido — apenas municípios BA reais (sem intermediários)
     c.execute("""
         SELECT municipio, uf,
-               COUNT(DISTINCT codigo) as emendas,
-               SUM(valor_empenhado) as empenhado,
-               SUM(valor_pago) as pago
-        FROM emendas
-        WHERE municipio IS NOT NULL AND municipio != '' AND municipio != 'Múltiplo'
+               COUNT(DISTINCT favorecido) as entidades,
+               SUM(valor_recebido) as recebido,
+               COUNT(DISTINCT codigo_emenda) as emendas
+        FROM favorecidos
+        WHERE municipio IS NOT NULL AND municipio != ''
+          AND municipio != 'Brasília' AND uf = 'BA'
         GROUP BY municipio, uf
-        ORDER BY empenhado DESC LIMIT 25
+        ORDER BY recebido DESC LIMIT 50
     """)
     top_municipios = [dict(r) for r in c.fetchall()]
 
@@ -267,7 +335,7 @@ def resumo_completo() -> dict:
     """)
     convenios = [dict(r) for r in c.fetchall()]
 
-    # Lista de todas emendas por ano/área para tabela detalhada
+    # Lista de todas emendas
     c.execute("""
         SELECT *, ROW_NUMBER() OVER (PARTITION BY codigo ORDER BY valor_empenhado DESC) as rn
         FROM emendas

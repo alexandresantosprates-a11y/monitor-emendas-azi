@@ -122,16 +122,29 @@ def _tabela_convenios(convenios: list) -> str:
 
 
 def _tabela_municipios(top: list) -> str:
+    if not top:
+        return "<tr><td colspan='5' style='text-align:center;color:#9ca3af;padding:20px'>Nenhum município encontrado</td></tr>"
+    max_rec = max((r.get("recebido") or 0) for r in top) or 1
     linhas = ""
     for i, r in enumerate(top, 1):
+        recebido = r.get("recebido") or 0
+        pct = recebido / max_rec * 100
+        cor = "#10b981" if pct > 70 else ("#f59e0b" if pct > 30 else "#3b82f6")
+        barra = (
+            f'<div style="background:#e5e7eb;border-radius:4px;height:7px;width:80px;display:inline-block;vertical-align:middle">'
+            f'<div style="background:{cor};height:7px;border-radius:4px;width:{pct:.0f}%"></div></div>'
+        )
+        uf = r.get("uf") or "BA"
+        mun = (r.get("municipio") or "—")
+        entidades = r.get("entidades") or 0
+        emendas = r.get("emendas") or 0
         linhas += (
             f"<tr>"
-            f"<td style='font-weight:700;color:#003DA5'>{i}</td>"
-            f"<td class='municipio'>{r['municipio']}/{r['uf']}</td>"
-            f"<td style='text-align:center'>{r['emendas']}</td>"
-            f"<td style='text-align:right;font-weight:700'>{_R(r['empenhado'])}</td>"
-            f"<td style='text-align:right;color:#10b981'>{_R(r['pago'])}</td>"
-            f"<td>{_barra(r['pago'], r['empenhado'])}</td>"
+            f"<td style='font-weight:700;color:#003DA5;text-align:center'>{i}</td>"
+            f"<td class='municipio'>{mun}<br><span style='font-size:10px;color:#64748b;font-weight:400'>{uf} · {entidades} entidade{'s' if entidades!=1 else ''}</span></td>"
+            f"<td style='text-align:center'>{emendas}</td>"
+            f"<td style='text-align:right;font-weight:700;color:#10b981'>{_R(recebido)}</td>"
+            f"<td>{barra}</td>"
             f"</tr>"
         )
     return linhas
@@ -155,14 +168,17 @@ def _tabela_categorias(cats: list) -> str:
 def _tabela_ano(anos: list) -> str:
     linhas = ""
     for r in anos:
+        emp = r.get("empenhado") or 0
+        rec = r.get("recebido") or 0
+        restos = r.get("restos_inscritos") or 0
         linhas += (
             f"<tr>"
             f"<td style='font-weight:800'>{r['ano']}</td>"
             f"<td style='text-align:center'>{r['emendas']}</td>"
-            f"<td style='text-align:right'>{_R(r['empenhado'])}</td>"
-            f"<td style='text-align:right'>{_R(r['liquidado'])}</td>"
-            f"<td style='text-align:right;color:#10b981;font-weight:700'>{_R(r['pago'])}</td>"
-            f"<td>{_barra(r['pago'], r['empenhado'])}</td>"
+            f"<td style='text-align:right'>{_R(emp)}</td>"
+            f"<td style='text-align:right;color:#10b981;font-weight:700'>{_R(rec)}</td>"
+            f"<td style='text-align:right;color:#f59e0b'>{_R(restos) if restos > 0 else '—'}</td>"
+            f"<td>{_barra(rec, emp)}</td>"
             f"</tr>"
         )
     return linhas
@@ -171,10 +187,14 @@ def _tabela_ano(anos: list) -> str:
 def gerar_html(resumo: dict, alertas: list) -> str:
     t = resumo.get("totais") or {}
     total_e = t.get("total_empenhado") or 0
-    total_p = t.get("total_pago") or 0
+    total_rec = t.get("total_recebido") or 0
+    total_pix = t.get("total_pix") or 0
     total_a = t.get("total_a_pagar") or 0
     total_qt = t.get("total_emendas") or 0
+    total_mun = t.get("total_municipios") or 0
     conv_qt = len(resumo.get("convenios") or [])
+    top_mun = resumo.get("top_municipios") or []
+    total_geral = total_rec + total_pix
 
     return f"""<!DOCTYPE html>
 <html lang="pt-BR">
@@ -192,8 +212,16 @@ def gerar_html(resumo: dict, alertas: list) -> str:
 <div class="kpis">
   <div class="kpi"><div class="kv">{total_qt}</div><div class="kl">Emendas únicas</div></div>
   <div class="kpi"><div class="kv">{_R(total_e)}</div><div class="kl">Total empenhado</div></div>
-  <div class="kpi"><div class="kv">{_R(total_p)}</div><div class="kl">Total pago</div></div>
-  <div class="kpi"><div class="kv">{_R(total_a)}</div><div class="kl">A receber</div></div>
+  <div class="kpi"><div class="kv">{_R(total_geral)}</div><div class="kl">Efetivamente entregue</div></div>
+  <div class="kpi"><div class="kv">{total_mun}+ municípios</div><div class="kl">Beneficiados (BA)</div></div>
+</div>
+
+<div style="background:#eff6ff;border-left:4px solid #3b82f6;padding:12px 20px;font-size:11px;color:#1e3a5f">
+  <strong>Como ler os valores:</strong>
+  <br>Convênios com finalidade definida (Finalidade): {_R(total_rec)} entregues diretamente a municípios e entidades da Bahia.
+  <br>Transferências Especiais (PIX — sem destino específico predefinido): {_R(total_pix)} distribuídas via Banco do Brasil para o estado.
+  <br>Total efetivamente entregue: <strong>{_R(total_geral)}</strong> de {_R(total_e)} empenhados.
+  Fonte: Portal da Transparência — CGU.
 </div>
 
 {_secao_alertas(alertas)}
@@ -218,13 +246,13 @@ def gerar_html(resumo: dict, alertas: list) -> str:
 </div>
 
 <div class="sec">
-  <h2>Top Municípios Beneficiados</h2>
+  <h2>Municípios Atendidos — {total_mun} municípios da Bahia</h2>
+  <p style="font-size:11px;color:#6b7280;margin-bottom:12px">Valor efetivamente recebido por cada município, conforme repasses do Portal da Transparência</p>
   <div style="overflow-x:auto">
   <table>
     <tr><th>#</th><th>Município</th><th style="text-align:center">Emendas</th>
-        <th style="text-align:right">Empenhado</th>
-        <th style="text-align:right">Pago</th><th>Execução</th></tr>
-    {_tabela_municipios(resumo.get("top_municipios") or [])}
+        <th style="text-align:right">Recebido</th><th>Proporção</th></tr>
+    {_tabela_municipios(top_mun)}
   </table>
   </div>
 </div>
@@ -241,11 +269,12 @@ def gerar_html(resumo: dict, alertas: list) -> str:
 
 <div class="sec">
   <h2>Histórico Anual</h2>
+  <p style="font-size:11px;color:#6b7280;margin-bottom:10px">Empenhado = comprometimento orçamentário do ano. Entregue = repasses reais (inclui liquidação de anos anteriores via Restos a Pagar).</p>
   <table>
     <tr><th>Ano</th><th style="text-align:center">Emendas</th>
         <th style="text-align:right">Empenhado</th>
-        <th style="text-align:right">Liquidado</th>
-        <th style="text-align:right">Pago</th><th>Execução</th></tr>
+        <th style="text-align:right">Efetivamente entregue</th>
+        <th style="text-align:right">A pagar</th><th>Execução</th></tr>
     {_tabela_ano(resumo.get("por_ano") or [])}
   </table>
 </div>

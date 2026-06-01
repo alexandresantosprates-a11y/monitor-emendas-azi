@@ -120,6 +120,46 @@ def processar_emendas_csv(rows: List[Dict]) -> int:
 # Processar CSV de convênios (EmendasParlamentares_Convenios.csv)
 # ---------------------------------------------------------------------------
 
+def processar_favorecidos_csv(rows: List[Dict]) -> int:
+    """Processa EmendasParlamentares_PorFavorecido.csv — pagamentos reais por entidade."""
+    ok = 0
+    for r in rows:
+        try:
+            codigo_emenda = _str(r.get("Código da Emenda") or "")
+            cnpj = _str(r.get("Código do Favorecido") or "")
+            favorecido = _str(r.get("Favorecido") or "")
+            ano_mes = _str(r.get("Ano/Mês") or "")
+            municipio = _str(r.get("Município Favorecido") or "").title()
+            uf = _str(r.get("UF Favorecido") or "")
+            valor = _float(r.get("Valor Recebido") or 0)
+
+            if not codigo_emenda or not ano_mes:
+                continue
+
+            ano = int(ano_mes[:4]) if len(ano_mes) >= 4 else 0
+            fav_id = f"{codigo_emenda}-{ano_mes}-{cnpj or favorecido[:20]}".replace(" ", "_")
+
+            db.upsert_favorecido({
+                "id": fav_id,
+                "codigo_emenda": codigo_emenda,
+                "numero_emenda": _str(r.get("Número da emenda") or ""),
+                "tipo_emenda": _str(r.get("Tipo de Emenda") or ""),
+                "ano_mes": ano_mes,
+                "ano": ano,
+                "cnpj_favorecido": cnpj,
+                "favorecido": favorecido,
+                "natureza_juridica": _str(r.get("Natureza Jurídica") or ""),
+                "tipo_favorecido": _str(r.get("Tipo Favorecido") or ""),
+                "uf": uf,
+                "municipio": municipio,
+                "valor_recebido": valor,
+            })
+            ok += 1
+        except Exception as e:
+            logger.error("Erro favorecido CSV: %s | %s", e, r)
+    return ok
+
+
 def processar_convenios_csv(rows: List[Dict]) -> int:
     ok = 0
     for r in rows:
