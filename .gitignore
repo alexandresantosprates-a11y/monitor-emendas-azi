@@ -1,0 +1,8 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+emendas.db
+relatorios/
+monitor.log
+*.command
