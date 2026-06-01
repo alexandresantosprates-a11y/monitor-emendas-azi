@@ -1,13 +1,13 @@
 """
 Web app do Monitor de Emendas — Paulo Azi
-Flask + senha de acesso + geração automática do relatório
+Flask + senha de acesso + carregamento em background
 """
 
 import os
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from functools import wraps
-from threading import Thread
+from threading import Thread, Event
 
 from flask import (Flask, request, session, redirect, url_for,
                    render_template_string, jsonify, send_file)
@@ -28,11 +28,44 @@ logging.basicConfig(level=logging.INFO,
 logger = logging.getLogger(__name__)
 
 SENHA_ACESSO = os.getenv("SENHA_ACESSO", "pauloazi2024")
-_atualizando = False
+
+# Estado global da coleta
+_status = {"pronto": False, "carregando": False, "erro": None, "ultima": None}
 
 
 # ---------------------------------------------------------------------------
-# Autenticação
+# Coleta em background
+# ---------------------------------------------------------------------------
+
+def _coletar_em_background():
+    global _status
+    if _status["carregando"]:
+        return
+    _status["carregando"] = True
+    _status["erro"] = None
+    try:
+        logger.info("Iniciando coleta em background...")
+        emendas_csv, convenios_csv = fetcher.carregar_csv_detalhado()
+        processor.processar_emendas_csv(emendas_csv)
+        processor.processar_convenios_csv(convenios_csv)
+        db.registrar_coleta("web_app", len(emendas_csv), "OK")
+        _status["pronto"] = True
+        _status["ultima"] = datetime.now().strftime("%d/%m/%Y às %H:%M")
+        logger.info("Coleta concluída: %d emendas", len(emendas_csv))
+    except Exception as e:
+        _status["erro"] = str(e)
+        logger.error("Erro na coleta: %s", e)
+    finally:
+        _status["carregando"] = False
+
+
+def _iniciar_coleta():
+    t = Thread(target=_coletar_em_background, daemon=True)
+    t.start()
+
+
+# ---------------------------------------------------------------------------
+# Auth
 # ---------------------------------------------------------------------------
 
 def login_required(f):
@@ -45,32 +78,29 @@ def login_required(f):
 
 
 # ---------------------------------------------------------------------------
-# Templates inline
+# Templates
 # ---------------------------------------------------------------------------
 
 LOGIN_HTML = """<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Monitor de Emendas — Paulo Azi</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:linear-gradient(135deg,#003DA5,#1a56db);min-height:100vh;
      display:flex;align-items:center;justify-content:center;font-family:'Segoe UI',Arial,sans-serif}
-.card{background:#fff;border-radius:16px;padding:48px 40px;width:100%;max-width:400px;
-      box-shadow:0 20px 60px rgba(0,0,0,.25);text-align:center}
-.logo{font-size:36px;margin-bottom:8px}
+.card{background:#fff;border-radius:16px;padding:48px 40px;width:100%;max-width:380px;
+      box-shadow:0 20px 60px rgba(0,0,0,.3);text-align:center}
+.logo{font-size:40px;margin-bottom:10px}
 h1{font-size:20px;font-weight:800;color:#003DA5;margin-bottom:4px}
 p{font-size:13px;color:#64748b;margin-bottom:28px}
-input{width:100%;padding:13px 16px;border:2px solid #e2e8f0;border-radius:10px;
-      font-size:15px;outline:none;transition:.2s}
+input{width:100%;padding:13px 16px;border:2px solid #e2e8f0;border-radius:10px;font-size:15px;outline:none}
 input:focus{border-color:#003DA5}
-button{width:100%;margin-top:14px;padding:13px;background:#003DA5;color:#fff;
-       border:none;border-radius:10px;font-size:15px;font-weight:700;cursor:pointer;transition:.2s}
+button{width:100%;margin-top:12px;padding:13px;background:#003DA5;color:#fff;
+       border:none;border-radius:10px;font-size:15px;font-weight:700;cursor:pointer}
 button:hover{background:#1a56db}
-.erro{background:#fef2f2;color:#991b1b;padding:10px;border-radius:8px;
-      font-size:13px;margin-bottom:14px}
+.erro{background:#fef2f2;color:#991b1b;padding:10px;border-radius:8px;font-size:13px;margin-bottom:14px}
 </style>
 </head>
 <body>
@@ -79,7 +109,7 @@ button:hover{background:#1a56db}
   <h1>Monitor de Emendas</h1>
   <p>Dep. Paulo Azi · Bahia</p>
   {% if erro %}<div class="erro">{{ erro }}</div>{% endif %}
-  <form method="POST">
+  <form method="POST" action="/">
     <input type="password" name="senha" placeholder="Senha de acesso" autofocus required>
     <button type="submit">Entrar</button>
   </form>
@@ -87,80 +117,106 @@ button:hover{background:#1a56db}
 </body>
 </html>"""
 
+CARREGANDO_HTML = """<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="5">
+<title>Carregando — Monitor de Emendas</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:linear-gradient(135deg,#003DA5,#1a56db);min-height:100vh;
+     display:flex;align-items:center;justify-content:center;font-family:'Segoe UI',Arial,sans-serif}
+.card{background:#fff;border-radius:16px;padding:48px 40px;width:100%;max-width:440px;
+      box-shadow:0 20px 60px rgba(0,0,0,.3);text-align:center}
+.spin{width:56px;height:56px;border:5px solid #e2e8f0;border-top-color:#003DA5;
+      border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 20px}
+@keyframes spin{to{transform:rotate(360deg)}}
+h2{font-size:18px;font-weight:800;color:#003DA5;margin-bottom:8px}
+p{font-size:13px;color:#64748b;line-height:1.6}
+.eta{margin-top:16px;background:#f0f4ff;border-radius:8px;padding:12px;
+     font-size:12px;color:#1d4ed8;font-weight:600}
+.erro{background:#fef2f2;color:#991b1b;padding:12px;border-radius:8px;font-size:13px;margin-top:16px}
+</style>
+</head>
+<body>
+<div class="card">
+  {% if erro %}
+    <div style="font-size:40px;margin-bottom:16px">⚠️</div>
+    <h2>Erro ao carregar</h2>
+    <div class="erro">{{ erro }}</div>
+    <p style="margin-top:16px"><a href="/dashboard" style="color:#003DA5;font-weight:700">Tentar novamente</a></p>
+  {% else %}
+    <div class="spin"></div>
+    <h2>Buscando dados...</h2>
+    <p>Estamos baixando as emendas parlamentares<br>do Portal da Transparência do Governo Federal.</p>
+    <div class="eta">⏱ Primeira abertura demora cerca de 1 minuto. Esta página atualiza automaticamente.</div>
+  {% endif %}
+</div>
+</body>
+</html>"""
+
 DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Monitor de Emendas — Paulo Azi</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:#f0f4f8;font-family:'Segoe UI',Arial,sans-serif}
-.topbar{background:#003DA5;color:#fff;padding:12px 24px;display:flex;align-items:center;
-        justify-content:space-between;position:sticky;top:0;z-index:100;
-        box-shadow:0 2px 8px rgba(0,0,0,.2)}
-.topbar h1{font-size:16px;font-weight:800}
-.topbar p{font-size:11px;opacity:.7;margin-top:2px}
-.actions{display:flex;gap:10px;align-items:center}
-.btn{padding:8px 16px;border-radius:8px;font-size:12px;font-weight:700;
-     cursor:pointer;border:none;text-decoration:none;display:inline-flex;align-items:center;gap:5px}
-.btn-atualizar{background:#fff;color:#003DA5}
-.btn-atualizar:hover{background:#e0e7ff}
-.btn-pdf{background:#10b981;color:#fff}
-.btn-pdf:hover{background:#059669}
-.btn-sair{background:rgba(255,255,255,.15);color:#fff}
-.btn-sair:hover{background:rgba(255,255,255,.25)}
-.status{font-size:11px;color:rgba(255,255,255,.7);text-align:right}
-.spinner{display:none;position:fixed;top:0;left:0;width:100%;height:100%;
-         background:rgba(0,30,80,.7);z-index:999;align-items:center;justify-content:center}
-.spinner.ativo{display:flex}
-.spin-box{background:#fff;border-radius:16px;padding:40px 48px;text-align:center}
-.spin-box p{font-size:15px;font-weight:700;color:#003DA5;margin-top:14px}
-.spin-box small{font-size:12px;color:#64748b}
-.spin{width:48px;height:48px;border:5px solid #e2e8f0;border-top-color:#003DA5;
+.bar{background:#003DA5;color:#fff;padding:10px 20px;display:flex;
+     align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
+.bar h1{font-size:15px;font-weight:800}
+.bar p{font-size:10px;opacity:.7;margin-top:2px}
+.btns{display:flex;gap:8px}
+.btn{padding:7px 14px;border-radius:7px;font-size:12px;font-weight:700;
+     cursor:pointer;border:none;text-decoration:none;display:inline-flex;align-items:center;gap:4px}
+.b1{background:#fff;color:#003DA5}.b1:hover{background:#e0e7ff}
+.b2{background:#10b981;color:#fff}.b2:hover{background:#059669}
+.b3{background:rgba(255,255,255,.15);color:#fff}.b3:hover{background:rgba(255,255,255,.25)}
+.overlay{display:none;position:fixed;inset:0;background:rgba(0,30,80,.75);
+          z-index:999;align-items:center;justify-content:center}
+.overlay.on{display:flex}
+.box{background:#fff;border-radius:14px;padding:40px 48px;text-align:center}
+.spin{width:44px;height:44px;border:5px solid #e2e8f0;border-top-color:#003DA5;
       border-radius:50%;animation:spin 1s linear infinite;margin:0 auto}
 @keyframes spin{to{transform:rotate(360deg)}}
-iframe{width:100%;height:calc(100vh - 60px);border:none;display:block}
+.box p{font-size:14px;font-weight:700;color:#003DA5;margin-top:14px}
+.box small{font-size:11px;color:#64748b}
+iframe{width:100%;height:calc(100vh - 52px);border:none;display:block}
 </style>
 </head>
 <body>
-
-<div class="topbar">
+<div class="bar">
   <div>
     <h1>📊 Monitor de Emendas — Dep. Paulo Azi</h1>
-    <p>Bahia · Portal da Transparência · Atualizado: {{ ultima_atualizacao }}</p>
+    <p>Bahia · Portal da Transparência · Última atualização: {{ ultima }}</p>
   </div>
-  <div class="actions">
-    <button class="btn btn-atualizar" onclick="atualizar()">🔄 Atualizar Dados</button>
-    <a class="btn btn-pdf" href="/download" download>⬇ Baixar HTML</a>
-    <a class="btn btn-sair" href="/sair">Sair</a>
+  <div class="btns">
+    <button class="btn b1" onclick="atualizar()">🔄 Atualizar Dados</button>
+    <a class="btn b2" href="/download">⬇ Baixar HTML</a>
+    <a class="btn b3" href="/sair">Sair</a>
   </div>
 </div>
-
-<div class="spinner" id="spinner">
-  <div class="spin-box">
+<div class="overlay" id="ov">
+  <div class="box">
     <div class="spin"></div>
     <p>Atualizando dados...</p>
-    <small>Buscando no Portal da Transparência. Aguarde.</small>
+    <small>Buscando no Portal da Transparência. Aguarde ~1 minuto.</small>
   </div>
 </div>
-
-<iframe src="/relatorio" id="frame"></iframe>
-
+<iframe src="/relatorio" id="fr"></iframe>
 <script>
-function atualizar() {
-  document.getElementById('spinner').classList.add('ativo');
-  fetch('/atualizar', {method:'POST'})
-    .then(r => r.json())
-    .then(d => {
-      document.getElementById('spinner').classList.remove('ativo');
-      if (d.ok) document.getElementById('frame').src = '/relatorio?t=' + Date.now();
-      else alert('Erro ao atualizar: ' + d.erro);
+function atualizar(){
+  document.getElementById('ov').classList.add('on');
+  fetch('/atualizar',{method:'POST'})
+    .then(r=>r.json())
+    .then(d=>{
+      document.getElementById('ov').classList.remove('on');
+      if(d.ok) document.getElementById('fr').src='/relatorio?t='+Date.now();
+      else alert('Erro: '+d.erro);
     })
-    .catch(() => {
-      document.getElementById('spinner').classList.remove('ativo');
-      alert('Erro de conexão.');
-    });
+    .catch(()=>{document.getElementById('ov').classList.remove('on');alert('Erro de conexão.');});
 }
 </script>
 </body>
@@ -186,46 +242,56 @@ def login():
 @app.route("/dashboard")
 @login_required
 def dashboard():
-    ultima = _ultima_atualizacao()
-    return render_template_string(DASHBOARD_HTML, ultima_atualizacao=ultima)
+    if not _status["pronto"] and not _status["carregando"]:
+        _iniciar_coleta()
+    if not _status["pronto"]:
+        return render_template_string(CARREGANDO_HTML, erro=_status.get("erro"))
+    return render_template_string(DASHBOARD_HTML, ultima=_status["ultima"] or "—")
 
 
 @app.route("/relatorio")
 @login_required
 def relatorio():
-    _garantir_dados()
+    if not _status["pronto"]:
+        return render_template_string(CARREGANDO_HTML, erro=_status.get("erro"))
     resumo = db.resumo_completo()
     alertas = db.buscar_alertas_nao_enviados()
     html = emailer.gerar_html(resumo, alertas)
     return html, 200, {"Content-Type": "text/html; charset=utf-8"}
 
 
-@app.route("/download")
+@app.route("/status")
 @login_required
-def download():
-    _garantir_dados()
-    resumo = db.resumo_completo()
-    alertas = db.buscar_alertas_nao_enviados()
-    caminho = emailer.salvar_html_local(resumo, alertas)
-    return send_file(caminho, as_attachment=True,
-                     download_name=f"emendas_paulo_azi_{datetime.now().strftime('%Y%m')}.html")
+def status():
+    return jsonify(_status)
 
 
 @app.route("/atualizar", methods=["POST"])
 @login_required
 def atualizar():
-    global _atualizando
-    if _atualizando:
+    if _status["carregando"]:
         return jsonify({"ok": False, "erro": "Atualização já em andamento."})
-    try:
-        _atualizando = True
-        _coletar_dados()
-        _atualizando = False
-        return jsonify({"ok": True})
-    except Exception as e:
-        _atualizando = False
-        logger.error("Erro ao atualizar: %s", e)
-        return jsonify({"ok": False, "erro": str(e)})
+    _iniciar_coleta()
+    # Aguarda até 90s pela conclusão
+    for _ in range(90):
+        import time; time.sleep(1)
+        if _status["pronto"] and not _status["carregando"]:
+            return jsonify({"ok": True})
+        if _status["erro"]:
+            return jsonify({"ok": False, "erro": _status["erro"]})
+    return jsonify({"ok": True})  # retorna mesmo se demorar — iframe vai atualizar
+
+
+@app.route("/download")
+@login_required
+def download():
+    if not _status["pronto"]:
+        return "Dados ainda não carregados.", 503
+    resumo = db.resumo_completo()
+    alertas = db.buscar_alertas_nao_enviados()
+    caminho = emailer.salvar_html_local(resumo, alertas)
+    return send_file(caminho, as_attachment=True,
+                     download_name=f"emendas_paulo_azi_{datetime.now().strftime('%Y%m')}.html")
 
 
 @app.route("/sair")
@@ -235,50 +301,11 @@ def sair():
 
 
 # ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _coletar_dados():
-    logger.info("Iniciando coleta de dados...")
-    emendas_csv, convenios_csv = fetcher.carregar_csv_detalhado()
-    processor.processar_emendas_csv(emendas_csv)
-    processor.processar_convenios_csv(convenios_csv)
-    db.registrar_coleta("web_app", len(emendas_csv), "OK")
-    logger.info("Coleta concluída: %d emendas, %d convênios", len(emendas_csv), len(convenios_csv))
-
-
-def _garantir_dados():
-    """Se o banco estiver vazio (ex: reinício do servidor), coleta os dados."""
-    conn = db.get_connection()
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM emendas")
-    total = c.fetchone()[0]
-    conn.close()
-    if total == 0:
-        logger.info("Banco vazio — coletando dados na inicialização...")
-        _coletar_dados()
-
-
-def _ultima_atualizacao() -> str:
-    try:
-        conn = db.get_connection()
-        c = conn.cursor()
-        c.execute("SELECT executado_em FROM coletas ORDER BY id DESC LIMIT 1")
-        row = c.fetchone()
-        conn.close()
-        if row and row[0]:
-            dt = datetime.fromisoformat(row[0])
-            return dt.strftime("%d/%m/%Y às %H:%M")
-    except:
-        pass
-    return "nunca"
-
-
-# ---------------------------------------------------------------------------
-# Startup
+# Startup — inicia coleta em background imediatamente
 # ---------------------------------------------------------------------------
 
 db.inicializar()
+_iniciar_coleta()
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
