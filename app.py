@@ -3,22 +3,19 @@ Web app do Monitor de Emendas — Paulo Azi
 Flask + senha de acesso + carregamento em background
 """
 
+from __future__ import annotations
+
 import os
 import logging
 from datetime import datetime
 from functools import wraps
-from threading import Thread, Event
+from threading import Thread
 
 from flask import (Flask, request, session, redirect, url_for,
                    render_template_string, jsonify, send_file)
 from dotenv import load_dotenv
 
 load_dotenv()
-
-import database as db
-import fetcher
-import processor
-import emailer
 
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET", "emendas-azi-2024-segredo")
@@ -27,14 +24,20 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-SENHA_ACESSO = os.getenv("SENHA_ACESSO", "pauloazi2024")
+SENHA_ACESSO = os.getenv("SENHA_ACESSO", "AziEmendas2024")
 
-# Estado global da coleta
+# Detecta se está rodando no Render (modo estático)
+MODO_ESTATICO = os.getenv("RENDER", "") != ""
+
+# Caminho do relatório pré-gerado
+STATIC_RELATORIO = os.path.join(os.path.dirname(__file__), "static", "relatorio.html")
+
+# Estado global da coleta (usado apenas em modo local)
 _status = {"pronto": False, "carregando": False, "erro": None, "ultima": None}
 
 
 # ---------------------------------------------------------------------------
-# Coleta em background
+# Coleta em background (apenas modo local)
 # ---------------------------------------------------------------------------
 
 def _coletar_em_background():
@@ -44,6 +47,10 @@ def _coletar_em_background():
     _status["carregando"] = True
     _status["erro"] = None
     try:
+        import database as db
+        import fetcher
+        import processor
+        import emailer
         logger.info("Iniciando coleta em background...")
         emendas_csv, convenios_csv = fetcher.carregar_csv_detalhado()
         processor.processar_emendas_csv(emendas_csv)
@@ -174,15 +181,6 @@ body{background:#f0f4f8;font-family:'Segoe UI',Arial,sans-serif}
 .b1{background:#fff;color:#003DA5}.b1:hover{background:#e0e7ff}
 .b2{background:#10b981;color:#fff}.b2:hover{background:#059669}
 .b3{background:rgba(255,255,255,.15);color:#fff}.b3:hover{background:rgba(255,255,255,.25)}
-.overlay{display:none;position:fixed;inset:0;background:rgba(0,30,80,.75);
-          z-index:999;align-items:center;justify-content:center}
-.overlay.on{display:flex}
-.box{background:#fff;border-radius:14px;padding:40px 48px;text-align:center}
-.spin{width:44px;height:44px;border:5px solid #e2e8f0;border-top-color:#003DA5;
-      border-radius:50%;animation:spin 1s linear infinite;margin:0 auto}
-@keyframes spin{to{transform:rotate(360deg)}}
-.box p{font-size:14px;font-weight:700;color:#003DA5;margin-top:14px}
-.box small{font-size:11px;color:#64748b}
 iframe{width:100%;height:calc(100vh - 52px);border:none;display:block}
 </style>
 </head>
@@ -190,35 +188,14 @@ iframe{width:100%;height:calc(100vh - 52px);border:none;display:block}
 <div class="bar">
   <div>
     <h1>📊 Monitor de Emendas — Dep. Paulo Azi</h1>
-    <p>Bahia · Portal da Transparência · Última atualização: {{ ultima }}</p>
+    <p>Bahia · Portal da Transparência · Atualizado em: {{ ultima }}</p>
   </div>
   <div class="btns">
-    <button class="btn b1" onclick="atualizar()">🔄 Atualizar Dados</button>
     <a class="btn b2" href="/download">⬇ Baixar HTML</a>
     <a class="btn b3" href="/sair">Sair</a>
   </div>
 </div>
-<div class="overlay" id="ov">
-  <div class="box">
-    <div class="spin"></div>
-    <p>Atualizando dados...</p>
-    <small>Buscando no Portal da Transparência. Aguarde ~1 minuto.</small>
-  </div>
-</div>
 <iframe src="/relatorio" id="fr"></iframe>
-<script>
-function atualizar(){
-  document.getElementById('ov').classList.add('on');
-  fetch('/atualizar',{method:'POST'})
-    .then(r=>r.json())
-    .then(d=>{
-      document.getElementById('ov').classList.remove('on');
-      if(d.ok) document.getElementById('fr').src='/relatorio?t='+Date.now();
-      else alert('Erro: '+d.erro);
-    })
-    .catch(()=>{document.getElementById('ov').classList.remove('on');alert('Erro de conexão.');});
-}
-</script>
 </body>
 </html>"""
 
@@ -242,6 +219,14 @@ def login():
 @app.route("/dashboard")
 @login_required
 def dashboard():
+    if MODO_ESTATICO:
+        # No Render: verifica se o arquivo estático existe
+        if not os.path.exists(STATIC_RELATORIO):
+            return render_template_string(CARREGANDO_HTML, erro="Relatório ainda não foi gerado. Gere localmente e faça push para o GitHub.")
+        stat = os.stat(STATIC_RELATORIO)
+        ultima = datetime.fromtimestamp(stat.st_mtime).strftime("%d/%m/%Y às %H:%M")
+        return render_template_string(DASHBOARD_HTML, ultima=ultima)
+    # Modo local: carrega do banco de dados
     if not _status["pronto"] and not _status["carregando"]:
         _iniciar_coleta()
     if not _status["pronto"]:
@@ -252,8 +237,17 @@ def dashboard():
 @app.route("/relatorio")
 @login_required
 def relatorio():
+    if MODO_ESTATICO:
+        if not os.path.exists(STATIC_RELATORIO):
+            return "<p>Relatório ainda não disponível.</p>", 503
+        with open(STATIC_RELATORIO, "r", encoding="utf-8") as f:
+            html = f.read()
+        return html, 200, {"Content-Type": "text/html; charset=utf-8"}
+    # Modo local
     if not _status["pronto"]:
         return render_template_string(CARREGANDO_HTML, erro=_status.get("erro"))
+    import database as db
+    import emailer
     resumo = db.resumo_completo()
     alertas = db.buscar_alertas_nao_enviados()
     html = emailer.gerar_html(resumo, alertas)
@@ -263,30 +257,25 @@ def relatorio():
 @app.route("/status")
 @login_required
 def status():
+    if MODO_ESTATICO:
+        tem_arquivo = os.path.exists(STATIC_RELATORIO)
+        return jsonify({"pronto": tem_arquivo, "carregando": False, "erro": None,
+                        "modo": "estatico"})
     return jsonify(_status)
-
-
-@app.route("/atualizar", methods=["POST"])
-@login_required
-def atualizar():
-    if _status["carregando"]:
-        return jsonify({"ok": False, "erro": "Atualização já em andamento."})
-    _iniciar_coleta()
-    # Aguarda até 90s pela conclusão
-    for _ in range(90):
-        import time; time.sleep(1)
-        if _status["pronto"] and not _status["carregando"]:
-            return jsonify({"ok": True})
-        if _status["erro"]:
-            return jsonify({"ok": False, "erro": _status["erro"]})
-    return jsonify({"ok": True})  # retorna mesmo se demorar — iframe vai atualizar
 
 
 @app.route("/download")
 @login_required
 def download():
+    if MODO_ESTATICO:
+        if not os.path.exists(STATIC_RELATORIO):
+            return "Relatório ainda não disponível.", 503
+        return send_file(STATIC_RELATORIO, as_attachment=True,
+                         download_name=f"emendas_paulo_azi_{datetime.now().strftime('%Y%m')}.html")
     if not _status["pronto"]:
         return "Dados ainda não carregados.", 503
+    import database as db
+    import emailer
     resumo = db.resumo_completo()
     alertas = db.buscar_alertas_nao_enviados()
     caminho = emailer.salvar_html_local(resumo, alertas)
@@ -301,20 +290,20 @@ def sair():
 
 
 # ---------------------------------------------------------------------------
-# Startup
+# Startup (apenas modo local)
 # ---------------------------------------------------------------------------
 
-try:
-    db.inicializar()
-except Exception as e:
-    logger.error("Erro ao inicializar banco: %s", e)
+if not MODO_ESTATICO:
+    try:
+        import database as db
+        db.inicializar()
+    except Exception as e:
+        logger.error("Erro ao inicializar banco: %s", e)
 
-
-@app.before_request
-def inicializar_dados():
-    """Inicia coleta na primeira requisição, não no import."""
-    if not _status["pronto"] and not _status["carregando"] and not _status["erro"]:
-        _iniciar_coleta()
+    @app.before_request
+    def inicializar_dados():
+        if not _status["pronto"] and not _status["carregando"] and not _status["erro"]:
+            _iniciar_coleta()
 
 
 if __name__ == "__main__":
