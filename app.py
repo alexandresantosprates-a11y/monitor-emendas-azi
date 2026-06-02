@@ -24,7 +24,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-SENHA_ACESSO = os.getenv("SENHA_ACESSO", "AziEmendas2024")
+SENHA_ACESSO = os.getenv("SENHA_ACESSO", "PauloAzi2026")
 
 # Detecta se está rodando no Render (modo estático)
 MODO_ESTATICO = os.getenv("RENDER", "") != ""
