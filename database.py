@@ -198,6 +198,27 @@ def upsert_favorecido(d: dict):
     conn.close()
 
 
+def enriquecer_convenio(numero: str, dados: dict):
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("""
+        UPDATE convenios SET
+            ministerio=:ministerio,
+            unidade_gestora=:unidade_gestora,
+            situacao_api=:situacao_api,
+            valor_liberado=:valor_liberado,
+            valor_contrapartida=:valor_contrapartida,
+            dt_inicio_vigencia=:dt_inicio_vigencia,
+            dt_fim_vigencia=:dt_fim_vigencia,
+            dt_ultima_liberacao=:dt_ultima_liberacao,
+            numero_processo=:numero_processo,
+            cnpj_convenente=:cnpj_convenente
+        WHERE numero=:numero
+    """, {**dados, "numero": numero})
+    conn.commit()
+    conn.close()
+
+
 def registrar_coleta(fonte: str, total: int, status: str, erro: str = None):
     conn = get_connection()
     c = conn.cursor()
@@ -323,7 +344,7 @@ def resumo_completo() -> dict:
     """)
     top_municipios = [dict(r) for r in c.fetchall()]
 
-    # Convênios — lista completa por área
+    # Convênios — lista completa com dados enriquecidos da API
     c.execute("""
         SELECT c.*, e.ano, e.status, e.valor_pago as valor_pago_emenda
         FROM convenios c
@@ -331,16 +352,69 @@ def resumo_completo() -> dict:
             SELECT codigo, MAX(ano) as ano, MAX(status) as status, SUM(valor_pago) as valor_pago
             FROM emendas GROUP BY codigo
         ) e ON c.codigo_emenda = e.codigo
-        ORDER BY c.municipio, c.data_publicacao DESC
+        ORDER BY c.valor DESC, c.municipio
     """)
     convenios = [dict(r) for r in c.fetchall()]
 
-    # Lista de todas emendas
+    # Lista de todas emendas com detalhes completos
     c.execute("""
         SELECT *, ROW_NUMBER() OVER (PARTITION BY codigo ORDER BY valor_empenhado DESC) as rn
-        FROM emendas
+        FROM emendas ORDER BY ano DESC, valor_empenhado DESC
     """)
     todas = [dict(r) for r in c.fetchall()]
+
+    # Municípios detalhados: cada favorecido com valor + ação da emenda correspondente
+    c.execute("""
+        SELECT
+            f.municipio,
+            f.uf,
+            f.favorecido,
+            f.natureza_juridica,
+            f.codigo_emenda,
+            SUM(f.valor_recebido) as recebido,
+            e.acao,
+            e.subfuncao,
+            e.categoria,
+            e.ano,
+            e.status,
+            e.tipo
+        FROM favorecidos f
+        LEFT JOIN emendas e ON e.codigo = f.codigo_emenda
+        WHERE f.municipio != '' AND f.municipio != 'Brasília' AND f.uf = 'BA'
+        GROUP BY f.municipio, f.favorecido, f.codigo_emenda
+        ORDER BY f.municipio, recebido DESC
+    """)
+    rows_mun = c.fetchall()
+
+    # Agrupa por município
+    municipios_detalhados = {}
+    for r in rows_mun:
+        mun = r["municipio"]
+        if mun not in municipios_detalhados:
+            municipios_detalhados[mun] = {
+                "municipio": mun,
+                "uf": r["uf"] or "BA",
+                "total": 0,
+                "repasses": []
+            }
+        municipios_detalhados[mun]["total"] += r["recebido"] or 0
+        municipios_detalhados[mun]["repasses"].append({
+            "favorecido": r["favorecido"],
+            "natureza": r["natureza_juridica"],
+            "codigo_emenda": r["codigo_emenda"],
+            "recebido": r["recebido"] or 0,
+            "acao": r["acao"] or "",
+            "subfuncao": r["subfuncao"] or "",
+            "categoria": r["categoria"] or "",
+            "ano": r["ano"],
+            "status": r["status"] or "",
+            "tipo": r["tipo"] or "",
+        })
+
+    municipios_detalhados = sorted(
+        municipios_detalhados.values(),
+        key=lambda x: -x["total"]
+    )
 
     conn.close()
 
@@ -352,4 +426,5 @@ def resumo_completo() -> dict:
         "top_municipios": top_municipios,
         "convenios": convenios,
         "todas_emendas": todas,
+        "municipios_detalhados": municipios_detalhados,
     }

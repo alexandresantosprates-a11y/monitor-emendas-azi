@@ -48,7 +48,19 @@ def coletar_completo():
     db.registrar_coleta("csv_favorecidos", ok_f, "OK")
     logger.info("CSV: %d emendas, %d convênios, %d favorecidos salvos", ok_e, ok_c, ok_f)
 
-    # 2. API — atualizar valores financeiros recentes (últimos 3 anos)
+    # 2. Enriquece convênios com dados da API (ministério, valor liberado, datas)
+    logger.info("Enriquecendo convênios com dados da API...")
+    conn = db.get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT numero FROM convenios WHERE numero != '' AND numero GLOB '[0-9]*'")
+    numeros = [r["numero"] for r in cur.fetchall()]
+    conn.close()
+    enriquecidos = fetcher.enriquecer_convenios_api(numeros)
+    for num, dados in enriquecidos.items():
+        db.enriquecer_convenio(num, dados)
+    logger.info("Convênios enriquecidos: %d", len(enriquecidos))
+
+    # 3. API — atualizar valores financeiros recentes (últimos 3 anos)
     logger.info("Atualizando valores via API...")
     ano_atual = datetime.now().year
     for ano in range(ano_atual - 2, ano_atual + 1):

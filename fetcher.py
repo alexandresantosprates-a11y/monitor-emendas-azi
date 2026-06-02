@@ -41,6 +41,42 @@ def _headers_web() -> dict:
 # API oficial — valores financeiros atualizados
 # ---------------------------------------------------------------------------
 
+def enriquecer_convenios_api(numeros: List[str]) -> Dict:
+    """Busca dados extras de cada convênio: ministério, valor liberado, datas, situação."""
+    resultado = {}
+    for num in numeros:
+        if not num or not num.strip().isdigit():
+            continue
+        try:
+            r = requests.get(
+                f"{BASE_API}/convenios",
+                headers=_headers_api(),
+                params={"numero": num.strip(), "pagina": 1, "tamanhoDaPagina": 1},
+                timeout=30,
+            )
+            if r.status_code == 200:
+                dados = r.json()
+                if isinstance(dados, list) and dados:
+                    d = dados[0]
+                    resultado[num.strip()] = {
+                        "ministerio": d.get("orgao", {}).get("nome", ""),
+                        "unidade_gestora": d.get("unidadeGestora", {}).get("nome", ""),
+                        "situacao_api": d.get("situacao", ""),
+                        "valor_liberado": d.get("valorLiberado") or 0,
+                        "valor_contrapartida": d.get("valorContrapartida") or 0,
+                        "dt_inicio_vigencia": d.get("dataInicioVigencia", ""),
+                        "dt_fim_vigencia": d.get("dataFinalVigencia", ""),
+                        "dt_ultima_liberacao": d.get("dataUltimaLiberacao", ""),
+                        "numero_processo": d.get("numeroProcesso", ""),
+                        "cnpj_convenente": d.get("convenente", {}).get("cnpjFormatado", ""),
+                    }
+            time.sleep(0.3)
+        except Exception as e:
+            logger.warning("Enriquecimento convênio %s: %s", num, e)
+    logger.info("Convênios enriquecidos: %d", len(resultado))
+    return resultado
+
+
 def buscar_emendas_api(nome_parlamentar: str, ano: int) -> List[Dict]:
     params = {
         "nomeAutor": nome_parlamentar,
